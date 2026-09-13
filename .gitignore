@@ -1,0 +1,34 @@
+# Spec and coordinator artifacts — never tracked in the build repo
+SPEC*
+*EXTREME*
+PROMPT*
+*PROMPT*
+REVIEW*
+FIX_PROMPT*
+SELFREVIEW*
+DRAFT*
+REPORT*
+INTERFACES*
+STATUS*
+
+# Build outputs and dependencies
+node_modules/
+dist/
+.venv/
+
+# Native helper build artifacts
+native/peercred
+native/seatbelt-launcher
+native/seccomp-table.h
+
+# Local runtime state
+*.sock
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.slots
+*.log
+tmp/

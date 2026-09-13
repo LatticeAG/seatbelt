@@ -1,0 +1,30 @@
+{
+  "name": "@latticeag/seatbelt",
+  "version": "0.1.0",
+  "description": "LatticeAG Seatbelt zone core: every action gets a budget and a kill switch before it gets a job. Durable spend reservations, one-shot dispatch markers, circuit breakers, and accountable local stopping.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "bin": {
+    "seatbelt": "bin/seatbelt"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "native"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:native": "cc -O2 -Wall -Wextra -o native/peercred native/peercred.c && node scripts/gen-seccomp-h.mjs > native/seccomp-table.h && cc -O2 -Wall -Wextra -o native/seatbelt-launcher native/seatbelt-launcher.c",
+    "test": "npm run build && node --test \"dist/test/*.test.js\"",
+    "conformance": "npm run build && node --test dist/test/vectors.test.js",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.4",
+    "typescript": "^5.9.3"
+  }
+}
