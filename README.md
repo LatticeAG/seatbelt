@@ -56,7 +56,10 @@ Requires Node.js ≥ 22.5 (`node:sqlite`) — developed on Node 24.
 
 ```sh
 npm ci
-npm run build:native   # optional: SO_PEERCRED + contained launcher helpers
+npm run build:native   # SO_PEERCRED + contained launcher helpers — required
+                       # to run the daemon (control socket auth uses them);
+                       # offline commands (verify, policy sign|validate,
+                       # doctor) work without it
 npm test               # builds, then runs the full suite
 ```
 
@@ -67,25 +70,100 @@ npm run conformance    # 60/60 TV-S vectors
 ```
 
 CLI sketch — bootstrap an offline ledger, apply policy, inspect, export and
-verify evidence:
+verify evidence. `init` writes `config.json`, `trust.json`, a quorum-signed
+revision-1 `policy.json` bundle, and key material under `keys/`; the caller's
+OS uid becomes every administrative role (`admin_uids`, `observer_uids`,
+`killer_uids`, `watch_uids`).
 
 ```sh
 seatbelt init --dir /srv/sb --profile offline-v1 --installation-id inst_one
 seatbelt doctor --config /srv/sb/config.json --trust /srv/sb/trust.json --json
+# every check except "socket" passes before the daemon exists (exit 9)
 seatbelt daemon --config /srv/sb/config.json --trust /srv/sb/trust.json \
   --policy /srv/sb/policy.json --foreground &
+# `daemon --policy` submits the bundle through the control socket at boot
+# with expected_revision "0" — the policy is ACTIVE (revision 1) by the time
+# status returns. Re-applying the same bundle reports STALE_REVISION.
 
 seatbelt status --config /srv/sb/config.json --json
-seatbelt policy apply --file /srv/sb/policy.json --expected-revision 0 \
+# -> {... "policy":"<active policy hash>" ...}
+```
+
+Policy updates are compare-and-swap: the new bundle's `body.revision` must be
+the active revision + 1, `body.previous` must equal the active policy hash,
+and `--expected-revision` must equal the active revision. `--file` takes a
+full `PolicyBundle` (`{body, signatures[2..3]}`), not the bare body — sign
+the body with `policy sign` and assemble it (trust threshold is 2 distinct
+principals):
+
+```sh
+# policy2-body.json = body of policy.json with revision "2" and
+# previous = <active policy hash> (root_budget/root_limit must not change)
+seatbelt policy sign --file policy2-body.json \
+  --key /srv/sb/keys/sign_one.seed --key-id sign_one --out sig1.json
+seatbelt policy sign --file policy2-body.json \
+  --key /srv/sb/keys/sign_two.seed --key-id sign_two --out sig2.json
+# -> policy2.json = {"body": policy2-body.json, "signatures": [sig1, sig2]}
+seatbelt policy validate --file policy2.json --trust /srv/sb/trust.json --json
+seatbelt policy apply --file policy2.json --expected-revision 1 \
   --config /srv/sb/config.json --json
+# -> {"policy":"<new policy hash>","revision":"2"}
+```
+
+Budgets, events, and offline evidence:
+
+```sh
 seatbelt budget create --id project --parent root --limit limit.json \
   --config /srv/sb/config.json --json
 seatbelt events --after 0 --limit 64 --config /srv/sb/config.json --json
+# -> {"events":[...], "head":{"seq":"N","hash":"<64-hex>"}, "next":"N"}
+
+# export/verify anchors are chain heads: {"seq":"0","hash":"<64 zeros>"} is
+# genesis; the `to` head is the `head` field from `events`/`status`.
 seatbelt export --from head0.json --to head1.json --disclosure FULL \
   --out bundle.json --config /srv/sb/config.json
 seatbelt verify --bundle bundle.json --trust /srv/sb/trust.json \
   --expected-head head1.json --json   # offline, independent replay
 ```
+
+### Input file schemas
+
+JSON files the CLI validates against closed schemas (extra keys are
+rejected). All counters are unsigned-integer *strings* matching
+`^(0|[1-9][0-9]{0,18})$`; ids match `^[a-z][a-z0-9_-]{0,63}$`; hashes are
+64 lowercase hex chars.
+
+- `--limit FILE` (`budget create`, `budget tighten`, `run`) — a Spend:
+  `{"microusd","input_tokens","output_tokens","calls"}` — all four members
+  required.
+- `--resources FILE` (`run`) — ResourceCaps, all seven members required and
+  bounded: `cpu_ms` 1..86400000, `wall_ms` 1000..86400000,
+  `memory_bytes` 67108864..8589934592 (64 MiB–8 GiB),
+  `scratch_bytes` 1048576..1073741824 (1 MiB–1 GiB), `tasks` 2..256,
+  `cpu_quota_us` 1000..400000, and `cpu_period_us` which must equal
+  `"100000"` (fixed profile).
+- `--launch FILE` (`run`) — `{"image": <64-hex image digest>,
+  "executable": "<absolute path>", "argv": [<string>…]}` — argv at most 64
+  entries of 1024 bytes each.
+- `--evidence FILE` (`watch stop`) — EvidenceRef:
+  `{"zone": <id>, "schema": "<^[a-z][a-z0-9_/-]{0,95}$>",
+  "hash": <64-hex>}`.
+- `--from/--to FILE` (`export`), `--expected-head FILE` (`verify`) — a chain
+  Head: `{"seq": <uint string>, "hash": <64-hex>}`. Genesis is
+  `{"seq":"0","hash":"000…000"}`. `verify` requires `--expected-head` unless
+  `--allow-unanchored` is given.
+- `policy apply --file` — a PolicyBundle `{"body": Policy,
+  "signatures": [{key_id, sig}…]}` with 2–3 signatures; `policy sign --file`
+  accepts either the bare body or a bundle. The Policy body itself is a
+  closed 18-member object (`v`, `policy_id`, `revision`, `previous`,
+  `root_budget`, `root_limit`, `max_run_limit`, `max_resources`,
+  `admin_uids`, `observer_uids`, `killer_uids`, `watch_uids`, `adapters`,
+  `breaker`, `max_runs`, `reservation_ms`, `heartbeat_ms`,
+  `guard_lease_ms`, `sample_ms`); breaker and the four timings are
+  profile-fixed (`{window_ms 1000, max_admissions 10, consecutive_errors 3,
+  cooldown_ms 30000, probe_timeout_ms 1000}` and `{reservation_ms 5000,
+  heartbeat_ms 1000, guard_lease_ms 750, sample_ms 100}`), `max_runs` is
+  1..32, and `root_budget`/`root_limit` are immutable across revisions.
 
 Kill-switch surface:
 
